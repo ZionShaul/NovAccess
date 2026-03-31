@@ -160,10 +160,11 @@ def extract_invoice_data(pdf_path: str, supplier_prompt: str, log_fn) -> list:
 def process_single_pdf(
     pdf_path: Path,
     prompts: dict,
-    processed_dir: Path,
-    errors_dir: Path,
+    archive_dir: Path,
     log_fn,
 ) -> list | None:
+    errors_dir = archive_dir / "errors"
+
     # Step 1: identify supplier
     try:
         log_fn("  זיהוי ספק...")
@@ -190,7 +191,7 @@ def process_single_pdf(
         return None
 
     log_fn(f"  {len(rows)} שורות חולצו בהצלחה")
-    _move(pdf_path, processed_dir)
+    _move(pdf_path, archive_dir / supplier_id)
     return rows
 
 
@@ -219,8 +220,7 @@ def process_folder(
     Stops early if stop_event is set.
     """
     folder = Path(folder_path)
-    processed_dir = folder / "processed"
-    errors_dir = folder / "errors_to_review"
+    archive_dir = folder / "processed"
 
     genai.configure(api_key=api_key)
 
@@ -249,7 +249,7 @@ def process_folder(
             break
 
         log_fn(f"[{i}/{total}] {pdf_path.name}")
-        rows = process_single_pdf(pdf_path, prompts, processed_dir, errors_dir, log_fn)
+        rows = process_single_pdf(pdf_path, prompts, archive_dir, log_fn)
         if rows is not None:
             all_rows.extend(rows)
             success_count += 1
