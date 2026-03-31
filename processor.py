@@ -21,10 +21,11 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 
 SUPPLIER_PROMPT_MAP = {
-    "ALEX":    "Prompt_ALEX.txt",
-    "MASHBIR": "Prompt_MASHBIR.txt",
-    "KOL_BO":  "Prompt_KOL_BO.txt",
-    "AMIR":    "Prompt_AMIR.txt",
+    "ALEX":     "Prompt_ALEX.txt",
+    "MASHBIR":  "Prompt_MASHBIR.txt",
+    "KOL_BO":   "Prompt_KOL_BO.txt",
+    "AMIR":     "Prompt_AMIR.txt",
+    "TIV_CHIM": "Prompt_TIV.txt",
 }
 
 EXPECTED_COLUMNS = [
@@ -269,7 +270,10 @@ def process_folder(
         log_fn("לא חולצו נתונים – לא נוצר קובץ אקסל.")
         return None
 
-    log_fn(f"קובץ אקסל נשמר:   {output_path}")
+    log_fn(f"קובץ פירוט נשמר:   {output_path}")
+    summary_path = str(output_path).replace(".xlsx", "_summary.xlsx")
+    if Path(summary_path).exists():
+        log_fn(f"קובץ סיכום נשמר:   {summary_path}")
     log_fn("=" * 40)
 
     return str(output_path)
@@ -279,7 +283,22 @@ def process_folder(
 # Excel export
 # ---------------------------------------------------------------------------
 
+_SUMMARY_LABELS = {"סה\"כ נטו", "מע\"מ", "סה\"כ לתשלום", "עיגול"}
+
+
 def save_excel(all_rows: list, output_path: str) -> None:
     df = pd.DataFrame(all_rows, columns=EXPECTED_COLUMNS)
+
+    is_summary = df["תיאור_מוצר"].isin(_SUMMARY_LABELS)
+    detail_df  = df[~is_summary]
+    summary_df = df[is_summary]
+
+    # Detail file — line items only, no summary rows
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Invoices")
+        detail_df.to_excel(writer, index=False, sheet_name="Invoices")
+
+    # Summary file — summary rows only, saved alongside detail file
+    if not summary_df.empty:
+        summary_path = output_path.replace(".xlsx", "_summary.xlsx")
+        with pd.ExcelWriter(summary_path, engine="openpyxl") as writer:
+            summary_df.to_excel(writer, index=False, sheet_name="Summary")
