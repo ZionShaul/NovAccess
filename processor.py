@@ -219,7 +219,7 @@ def extract_invoice_data(pdf_path: str, supplier_prompt: str, log_fn) -> list:
         cleaned = clean_json_response(raw)
         try:
             data = json.loads(cleaned)
-            rows = data["rows"]
+            rows = data if isinstance(data, list) else data["rows"]
             rows = _fill_missing_header_fields(rows)
             return rows
         except json.JSONDecodeError as exc:
