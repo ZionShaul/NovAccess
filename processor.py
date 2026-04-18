@@ -38,7 +38,18 @@ EXPECTED_COLUMNS = [
 ]
 
 # Model fallback list — primary first
-MODELS = ["gemini-flash-latest", "gemini-2.0-flash-lite"]
+MODELS = [
+    "gemini-2.5-flash-preview-04-17",       # thinking model — עיקרי
+    "gemini-2.0-flash-thinking-exp-01-21",  # fallback thinking
+    "gemini-flash-latest",                   # fallback מהיר (ללא thinking)
+]
+
+# מודלים שתומכים ב-thinking config
+THINKING_MODELS = {
+    "gemini-2.5-flash-preview-04-17",
+    "gemini-2.0-flash-thinking-exp-01-21",
+}
+THINKING_BUDGET = 8192
 
 MAX_RETRIES = 3
 
@@ -117,14 +128,26 @@ def call_gemini_with_retry(pdf_path: str, prompt: str, log_fn) -> str:
     try:
         for model_name in MODELS:
             model = genai.GenerativeModel(model_name)
+            use_thinking = model_name in THINKING_MODELS
+            gen_config = (
+                genai.GenerationConfig(
+                    temperature=1,
+                    thinking_config={"thinking_budget": THINKING_BUDGET},
+                )
+                if use_thinking else None
+            )
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
-                    log_fn(f"  שולח ל-Gemini ({model_name}, ניסיון {attempt}/{MAX_RETRIES})...")
+                    thinking_label = " [thinking]" if use_thinking else ""
+                    log_fn(f"  שולח ל-Gemini ({model_name}{thinking_label}, ניסיון {attempt}/{MAX_RETRIES})...")
+                    kwargs = {"request_options": {"timeout": 600}}
+                    if gen_config:
+                        kwargs["generation_config"] = gen_config
                     response = model.generate_content(
                         [uploaded_file, prompt],
-                        request_options={"timeout": 600},
+                        **kwargs,
                     )
-                    log_fn(f"  מודל פעיל: {model_name}")
+                    log_fn(f"  מודל פעיל: {model_name}{thinking_label}")
                     return response.text
                 except _GEMINI_TIMEOUT:
                     if attempt == MAX_RETRIES:
