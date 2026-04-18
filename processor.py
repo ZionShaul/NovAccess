@@ -186,6 +186,32 @@ def identify_supplier(pdf_path: str, id_prompt: str, log_fn) -> str:
     return data.get("supplier_id", "UNKNOWN")
 
 
+_HEADER_FIELDS = ["ספק", "לקוח", "מספר_חשבונית", "תאריך_חשבונית"]
+
+
+def _fill_missing_header_fields(rows: list) -> list:
+    """
+    אם המודל השמיט שדות header חוזרים (ספק/לקוח/מספר_חשבונית/תאריך_חשבונית),
+    ממצא את ערכיהם מהשורות שכן כוללות אותם וממלא את השאר.
+    """
+    collected = {}
+    for row in rows:
+        for field in _HEADER_FIELDS:
+            if field not in collected and row.get(field):
+                collected[field] = row[field]
+        if len(collected) == len(_HEADER_FIELDS):
+            break
+
+    if not collected:
+        return rows  # אין מה למלא
+
+    for row in rows:
+        for field, value in collected.items():
+            if not row.get(field):
+                row[field] = value
+    return rows
+
+
 def extract_invoice_data(pdf_path: str, supplier_prompt: str, log_fn) -> list:
     last_exc = None
     for json_attempt in range(1, 4):
@@ -193,7 +219,9 @@ def extract_invoice_data(pdf_path: str, supplier_prompt: str, log_fn) -> list:
         cleaned = clean_json_response(raw)
         try:
             data = json.loads(cleaned)
-            return data["rows"]
+            rows = data["rows"]
+            rows = _fill_missing_header_fields(rows)
+            return rows
         except json.JSONDecodeError as exc:
             last_exc = exc
             log_fn(f"  [אזהרה] JSON לא תקין (ניסיון {json_attempt}/3): {exc}")
