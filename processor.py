@@ -14,7 +14,8 @@ from pathlib import Path
 
 import pypdf
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import google.api_core.exceptions
 import pandas as pd
 
@@ -60,6 +61,7 @@ MAX_RETRIES = 3
 _GEMINI_TIMEOUT = (TimeoutError, google.api_core.exceptions.DeadlineExceeded)
 
 _SCRIPT_DIR = Path(__file__).parent
+_client: genai.Client | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -113,10 +115,10 @@ def _load_all_prompts() -> dict:
 def _upload_and_wait(pdf_path: str, log_fn) -> object:
     """Upload PDF and wait until Gemini marks it ACTIVE."""
     log_fn("  מעלה PDF ל-Gemini...")
-    uploaded = genai.upload_file(str(pdf_path), mime_type="application/pdf")
+    uploaded = _client.files.upload(file=str(pdf_path))
     while uploaded.state.name != "ACTIVE":
         time.sleep(3)
-        uploaded = genai.get_file(uploaded.name)
+        uploaded = _client.files.get(name=uploaded.name)
     return uploaded
 
 
@@ -134,22 +136,23 @@ def call_gemini_with_retry(pdf_path: str, prompt: str, log_fn, models=None) -> s
 
     try:
         for model_name in models:
-            model = genai.GenerativeModel(model_name)
             use_thinking = model_name in THINKING_MODELS
-            # thinking_config מועבר כ-dict גולמי — GenerationConfig הישן לא מכיר את המפתח
             gen_config = (
-                {"temperature": 1, "thinking_config": {"thinking_budget": THINKING_BUDGET}}
+                types.GenerateContentConfig(
+                    thinking_config=types.ThinkingConfig(thinking_budget=THINKING_BUDGET)
+                )
                 if use_thinking else None
             )
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
                     thinking_label = " [thinking]" if use_thinking else ""
                     log_fn(f"  שולח ל-Gemini ({model_name}{thinking_label}, ניסיון {attempt}/{MAX_RETRIES})...")
-                    kwargs = {"request_options": {"timeout": 600}}
+                    kwargs = {}
                     if gen_config:
-                        kwargs["generation_config"] = gen_config
-                    response = model.generate_content(
-                        [uploaded_file, prompt],
+                        kwargs["config"] = gen_config
+                    response = _client.models.generate_content(
+                        model=model_name,
+                        contents=[uploaded_file, prompt],
                         **kwargs,
                     )
                     log_fn(f"  מודל פעיל: {model_name}{thinking_label}")
@@ -167,7 +170,7 @@ def call_gemini_with_retry(pdf_path: str, prompt: str, log_fn, models=None) -> s
 
     finally:
         try:
-            genai.delete_file(uploaded_file.name)
+            _client.files.delete(name=uploaded_file.name)
         except Exception:
             pass
 
@@ -401,7 +404,8 @@ def process_folder(
     folder = Path(folder_path)
     archive_dir = folder / "processed"
 
-    genai.configure(api_key=api_key)
+    global _client
+    _client = genai.Client(api_key=api_key)
 
     prompts = _load_all_prompts()
 
