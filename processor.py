@@ -32,6 +32,11 @@ SUPPLIER_PROMPT_MAP = {
     "DESHEN":   "Prompt_DESHEN.txt",
 }
 
+# שם תצוגה קבוע לכל ספק — ידרוס את מה שהמודל מחלץ מה-PDF
+SUPPLIER_DISPLAY_NAMES = {
+    "MASHBIR":  "המשביר לצרכן",
+}
+
 EXPECTED_COLUMNS = [
     "ספק", "לקוח", "מספר_חשבונית", "תאריך_חשבונית",
     "מספר_תעודת_משלוח", "תאריך_תעודה", "מקט",
@@ -398,6 +403,12 @@ def process_single_pdf(
         log_fn(f"  [שגיאה] חילוץ נתונים נכשל: {exc}")
         _move(pdf_path, errors_dir)
         return None
+
+    # דריסת שם ספק לפי הגדרה קבועה (אם קיימת)
+    display_name = SUPPLIER_DISPLAY_NAMES.get(supplier_id)
+    if display_name:
+        for row in rows:
+            row["ספק"] = display_name
 
     log_fn(f"  {len(rows)} שורות חולצו בהצלחה")
     _move(pdf_path, archive_dir / supplier_id)
