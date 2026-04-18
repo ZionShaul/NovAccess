@@ -4,3 +4,5 @@ openpyxl>=3.1.0
 python-dotenv>=1.0.0
 pywin32
 winshell
+extract-msg>=0.28.0
+pypdf>=4.0.0

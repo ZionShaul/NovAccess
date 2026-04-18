@@ -12,6 +12,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import pypdf
+
 import google.generativeai as genai
 import google.api_core.exceptions
 import pandas as pd
@@ -26,6 +28,7 @@ SUPPLIER_PROMPT_MAP = {
     "KOL_BO":   "Prompt_KOL_BO.txt",
     "AMIR":     "Prompt_AMIR.txt",
     "TIV_CHIM": "Prompt_TIV.txt",
+    "DESHEN":   "Prompt_DESHEN.txt",
 }
 
 EXPECTED_COLUMNS = [
@@ -53,17 +56,33 @@ def load_prompt(filename: str) -> str:
     return (_SCRIPT_DIR / filename).read_text(encoding="utf-8")
 
 
+def _fix_hebrew_gershayim(s: str) -> str:
+    """
+    תיקון גרשיים עבריים שאינם מוסקפים בתוך ערכי JSON.
+    למשל: אגש"ח → אגש'ח , בע"מ → בע'מ
+    מחליף " שמופיע בין תווים עבריים בגרש בודד '.
+    """
+    return re.sub(r'(?<=[א-ת])"(?=[א-תa-zA-Z])', "'", s)
+
+
 def clean_json_response(raw: str) -> str:
     raw = raw.strip()
     # Priority 1: JSON inside a code block
     match = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", raw)
     if match:
-        return match.group(1).strip()
-    # Priority 2: first {...} block (handles text prefix/suffix from model)
-    match = re.search(r"(\{[\s\S]*\})", raw)
-    if match:
-        return match.group(1).strip()
-    return raw
+        candidate = match.group(1).strip()
+    else:
+        # Priority 2: first {...} block (handles text prefix/suffix from model)
+        match = re.search(r"(\{[\s\S]*\})", raw)
+        candidate = match.group(1).strip() if match else raw
+
+    # Fix unescaped Hebrew gershayim (e.g., אגש"ח, בע"מ) that break JSON parsing
+    try:
+        json.loads(candidate)
+        return candidate          # already valid — no fix needed
+    except json.JSONDecodeError:
+        fixed = _fix_hebrew_gershayim(candidate)
+        return fixed
 
 
 def _load_all_prompts() -> dict:
@@ -154,6 +173,132 @@ def extract_invoice_data(pdf_path: str, supplier_prompt: str, log_fn) -> list:
 
 
 # ---------------------------------------------------------------------------
+# MSG extraction
+# ---------------------------------------------------------------------------
+
+def extract_pdfs_from_msg(msg_path: Path, dest_folder: Path, log_fn) -> list:
+    """חולץ קבצי PDF מקובץ MSG ומחזיר רשימת נתיבים."""
+    import extract_msg
+    extracted = []
+    try:
+        with extract_msg.openMsg(str(msg_path)) as msg:
+            for att in msg.attachments:
+                name = (att.longFilename or att.shortFilename or "").rstrip("\x00").strip()
+                if name.lower().endswith(".pdf"):
+                    out_path = dest_folder / name
+                    if out_path.exists():
+                        out_path = dest_folder / f"{out_path.stem}_from_{msg_path.stem}.pdf"
+                    att.save(customPath=str(dest_folder), customFilename=out_path.name.rstrip("\x00"))
+                    extracted.append(out_path)
+                    log_fn(f"  [MSG] חולץ: {out_path.name} מתוך {msg_path.name}")
+    except Exception as e:
+        log_fn(f"  [MSG] שגיאה בחילוץ {msg_path.name}: {e}")
+    return extracted
+
+
+# ---------------------------------------------------------------------------
+# EML extraction
+# ---------------------------------------------------------------------------
+
+def extract_pdfs_from_eml(eml_path: Path, dest_folder: Path, log_fn) -> list:
+    """חולץ קבצי PDF מקובץ EML ומחזיר רשימת נתיבים."""
+    import email
+    from email import policy as email_policy
+
+    extracted = []
+    try:
+        with open(eml_path, "rb") as f:
+            msg = email.message_from_binary_file(f, policy=email_policy.default)
+        for part in msg.walk():
+            name = part.get_filename() or ""
+            if name.lower().endswith(".pdf"):
+                payload = part.get_payload(decode=True)
+                if not payload:
+                    continue
+                dest_folder.mkdir(parents=True, exist_ok=True)
+                out_path = dest_folder / name
+                if out_path.exists():
+                    out_path = dest_folder / f"{out_path.stem}_from_{eml_path.stem}.pdf"
+                out_path.write_bytes(payload)
+                extracted.append(out_path)
+                log_fn(f"  [EML] חולץ: {out_path.name} מתוך {eml_path.name}")
+    except Exception as e:
+        log_fn(f"  [EML] שגיאה בחילוץ {eml_path.name}: {e}")
+    return extracted
+
+
+# ---------------------------------------------------------------------------
+# Multi-invoice PDF splitting (המשביר SPS1 format)
+# ---------------------------------------------------------------------------
+
+_SPS1_RE   = re.compile(r"SPS1:(\d+):")
+_DESHEN_RE = re.compile(r"SI266(\d{6})")
+
+
+def _invoice_num_from_page(page) -> str | None:
+    """Extract invoice number from page — supports SPS1 (המשביר) and SI266 (דשן הצפון)."""
+    text = page.extract_text() or ""
+    m = _SPS1_RE.search(text)
+    if m:
+        return m.group(1)
+    m = _DESHEN_RE.search(text)
+    if m:
+        return f"SI266{m.group(1)}"
+    return None
+
+
+def split_multi_invoice_pdf(pdf_path: Path, dest_folder: Path, log_fn) -> list:
+    """
+    אם ה-PDF מכיל מספר חשבוניות (לפי SPS1 / SI266 header), מפרק לקבצים נפרדים.
+    מחזיר רשימת נתיבים לקבצים שנוצרו.
+    אם ה-PDF מכיל חשבונית אחת בלבד, מחזיר רשימה ריקה (אין צורך בפירוק).
+    """
+    reader = pypdf.PdfReader(str(pdf_path))
+
+    # Build groups: list of [invoice_num, [page_indices]]
+    groups = []
+    for i, page in enumerate(reader.pages):
+        inv = _invoice_num_from_page(page)
+        if groups and groups[-1][0] == inv:
+            groups[-1][1].append(i)
+        else:
+            groups.append([inv, [i]])
+
+    if len(groups) <= 1:
+        return []  # single invoice or unrecognized format — no split needed
+
+    # במסמך SI266 (דשן): עמוד ללא מספר = עמוד המשך — נצמד לקבוצה הקודמת
+    is_si266_doc = any(inv and inv.startswith("SI266") for inv, _ in groups)
+    if is_si266_doc:
+        merged = []
+        for inv, pages in groups:
+            if inv is None and merged:
+                merged[-1][1].extend(pages)
+            else:
+                merged.append([inv, pages])
+        groups = merged
+
+    dest_folder.mkdir(parents=True, exist_ok=True)
+    created = []
+    skipped = 0
+    for inv_num, page_indices in groups:
+        if inv_num is None:
+            skipped += len(page_indices)
+            continue  # דפי כיסוי / תנאים ללא מספר חשבונית — מדלגים
+        out_path = dest_folder / f"{inv_num}.pdf"
+        writer = pypdf.PdfWriter()
+        for idx in page_indices:
+            writer.add_page(reader.pages[idx])
+        with open(out_path, "wb") as f:
+            writer.write(f)
+        created.append(out_path)
+
+    skip_note = f", דולגו {skipped} עמ' ללא כותרת" if skipped else ""
+    log_fn(f"  [פירוק] {pdf_path.name}: {len(created)} חשבוניות{skip_note} → {dest_folder.name}/")
+    return created
+
+
+# ---------------------------------------------------------------------------
 # Per-PDF orchestration
 # ---------------------------------------------------------------------------
 
@@ -163,6 +308,10 @@ def process_single_pdf(
     archive_dir: Path,
     log_fn,
 ) -> list | None:
+    if not pdf_path.exists():
+        log_fn(f"  [דילוג] קובץ לא נמצא (כנראה כבר עובד): {pdf_path.name}")
+        return None
+
     errors_dir = archive_dir / "errors"
 
     # Step 1: identify supplier
@@ -196,6 +345,8 @@ def process_single_pdf(
 
 
 def _move(src: Path, dest_dir: Path):
+    if not src.exists():
+        return
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / src.name
     if dest.exists():
@@ -226,15 +377,48 @@ def process_folder(
 
     prompts = _load_all_prompts()
 
-    pdfs = sorted(folder.glob("*.pdf"))
+    # שלב 1: חלץ PDFים מקבצי MSG / EML
+    mail_files = sorted(folder.glob("*.msg")) + sorted(folder.glob("*.eml"))
+    if mail_files:
+        tmp_extract_dir = folder / "_msg_extracted"
+        tmp_extract_dir.mkdir(exist_ok=True)
+        for mail_file in mail_files:
+            log_fn(f"מעבד קובץ מייל: {mail_file.name}")
+            if mail_file.suffix.lower() == ".msg":
+                extract_pdfs_from_msg(mail_file, tmp_extract_dir, log_fn)
+            else:
+                extract_pdfs_from_eml(mail_file, tmp_extract_dir, log_fn)
+        log_fn("")
+    else:
+        tmp_extract_dir = None
+
+    # שלב 2: פרק PDFs עם מרובה חשבוניות (SPS1 format)
+    candidate_pdfs = list(sorted(folder.glob("*.pdf")))
+    if tmp_extract_dir:
+        candidate_pdfs += list(sorted(tmp_extract_dir.glob("*.pdf")))
+
+    split_dir = folder / "_split"
+    final_pdfs = []
+    seen_stems = set()
+    for pdf in candidate_pdfs:
+        split_results = split_multi_invoice_pdf(pdf, split_dir, log_fn)
+        candidates = split_results if split_results else [pdf]
+        for p in candidates:
+            if p.stem in seen_stems:
+                log_fn(f"  [כפול] {p.name} כבר בתור — מדלג")
+            else:
+                seen_stems.add(p.stem)
+                final_pdfs.append(p)
+
+    pdfs = final_pdfs
     total = len(pdfs)
 
     if total == 0:
-        log_fn("לא נמצאו קבצי PDF בתיקייה.")
+        log_fn("לא נמצאו קבצי PDF בתיקייה (גם לא בתוך קבצי MSG).")
         progress_fn(0, 0)
         return None
 
-    log_fn(f"נמצאו {total} קבצי PDF. מתחיל עיבוד...\n")
+    log_fn(f"נמצאו {total} קבצי PDF לעיבוד. מתחיל...\n")
 
     all_rows = []
     success_count = 0
@@ -302,3 +486,57 @@ def save_excel(all_rows: list, output_path: str) -> None:
         summary_path = output_path.replace(".xlsx", "_summary.xlsx")
         with pd.ExcelWriter(summary_path, engine="openpyxl") as writer:
             summary_df.to_excel(writer, index=False, sheet_name="Summary")
+
+
+# ---------------------------------------------------------------------------
+# Excel merge
+# ---------------------------------------------------------------------------
+
+def merge_excel_files(
+    file_paths: list,
+    output_path: str,
+    include_summary: bool = True,
+    log_fn=None,
+) -> tuple:
+    """
+    מאחד מספר קבצי Excel (גיליון Invoices) לקובץ אחד.
+    מחזיר (detail_output_path, summary_output_path | None).
+    """
+    if not file_paths:
+        raise ValueError("לא נבחרו קבצים לאיחוד")
+
+    detail_frames, summary_frames = [], []
+
+    for p in file_paths:
+        if not Path(p).exists():
+            raise FileNotFoundError(f"קובץ לא נמצא: {p}")
+        try:
+            df = pd.read_excel(p, sheet_name="Invoices")
+        except Exception:
+            raise ValueError(f"קובץ לא תקין או חסר גיליון 'Invoices': {Path(p).name}")
+        detail_frames.append(df)
+        if log_fn:
+            log_fn(f"  נקרא: {Path(p).name} — {len(df)} שורות")
+
+        if include_summary:
+            sp = p.replace(".xlsx", "_summary.xlsx")
+            if Path(sp).exists():
+                try:
+                    summary_frames.append(pd.read_excel(sp, sheet_name="Summary"))
+                except Exception:
+                    pass
+
+    merged = pd.concat(detail_frames, ignore_index=True)
+    with pd.ExcelWriter(output_path, engine="openpyxl") as w:
+        merged.to_excel(w, index=False, sheet_name="Invoices")
+
+    summary_out = None
+    if summary_frames:
+        summary_out = output_path.replace(".xlsx", "_summary.xlsx")
+        with pd.ExcelWriter(summary_out, engine="openpyxl") as w:
+            pd.concat(summary_frames, ignore_index=True).to_excel(w, index=False, sheet_name="Summary")
+
+    if log_fn:
+        log_fn(f"נכתב: {Path(output_path).name} ({len(merged)} שורות סה\"כ)")
+
+    return output_path, summary_out
