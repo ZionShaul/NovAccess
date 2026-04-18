@@ -43,17 +43,18 @@ ID_MODELS = ["gemini-flash-latest", "gemini-2.0-flash-lite"]
 
 # מודלים לחילוץ נתונים — דורש reasoning מעמיק
 EXTRACTION_MODELS = [
-    "gemini-2.5-flash-preview-04-17",       # thinking model — עיקרי
-    "gemini-2.0-flash-thinking-exp-01-21",  # fallback thinking
-    "gemini-flash-latest",                   # fallback מהיר (ללא thinking)
+    "gemini-2.5-flash",       # stable thinking model — עיקרי
+    "gemini-3-flash-preview", # preview thinking model — fallback
+    "gemini-flash-latest",    # fallback מהיר (ללא thinking)
 ]
 
-# מודלים שתומכים ב-thinking config (מועבר כ-dict, לא GenerationConfig)
+# מודלים שתומכים ב-thinking config
 THINKING_MODELS = {
-    "gemini-2.5-flash-preview-04-17",
-    "gemini-2.0-flash-thinking-exp-01-21",
+    "gemini-2.5-flash",
+    "gemini-3-flash-preview",
 }
-THINKING_BUDGET = 8192
+# thinking_budget=-1 = AUTOMATIC (המודל מחליט כמה לחשוב לפי מורכבות הבקשה)
+THINKING_BUDGET = -1
 
 MAX_RETRIES = 3
 
