@@ -37,14 +37,17 @@ EXPECTED_COLUMNS = [
     "תיאור_מוצר", "כמות", "מחיר_ליחידה", "סהכ_מחיר",
 ]
 
-# Model fallback list — primary first
-MODELS = [
+# מודלים לזיהוי ספק — משימה פשוטה, מודל זול מספיק
+ID_MODELS = ["gemini-flash-latest", "gemini-2.0-flash-lite"]
+
+# מודלים לחילוץ נתונים — דורש reasoning מעמיק
+EXTRACTION_MODELS = [
     "gemini-2.5-flash-preview-04-17",       # thinking model — עיקרי
     "gemini-2.0-flash-thinking-exp-01-21",  # fallback thinking
     "gemini-flash-latest",                   # fallback מהיר (ללא thinking)
 ]
 
-# מודלים שתומכים ב-thinking config
+# מודלים שתומכים ב-thinking config (מועבר כ-dict, לא GenerationConfig)
 THINKING_MODELS = {
     "gemini-2.5-flash-preview-04-17",
     "gemini-2.0-flash-thinking-exp-01-21",
@@ -117,23 +120,25 @@ def _upload_and_wait(pdf_path: str, log_fn) -> object:
     return uploaded
 
 
-def call_gemini_with_retry(pdf_path: str, prompt: str, log_fn) -> str:
+def call_gemini_with_retry(pdf_path: str, prompt: str, log_fn, models=None) -> str:
     """
     Upload PDF, try each model up to MAX_RETRIES times.
     Always deletes the uploaded file.
     Returns response text on success; raises on total failure.
+    models: רשימת מודלים לניסיון (ברירת מחדל: EXTRACTION_MODELS)
     """
+    if models is None:
+        models = EXTRACTION_MODELS
+
     uploaded_file = _upload_and_wait(pdf_path, log_fn)
 
     try:
-        for model_name in MODELS:
+        for model_name in models:
             model = genai.GenerativeModel(model_name)
             use_thinking = model_name in THINKING_MODELS
+            # thinking_config מועבר כ-dict גולמי — GenerationConfig הישן לא מכיר את המפתח
             gen_config = (
-                genai.GenerationConfig(
-                    temperature=1,
-                    thinking_config={"thinking_budget": THINKING_BUDGET},
-                )
+                {"temperature": 1, "thinking_config": {"thinking_budget": THINKING_BUDGET}}
                 if use_thinking else None
             )
             for attempt in range(1, MAX_RETRIES + 1):
@@ -172,7 +177,7 @@ def call_gemini_with_retry(pdf_path: str, prompt: str, log_fn) -> str:
 # ---------------------------------------------------------------------------
 
 def identify_supplier(pdf_path: str, id_prompt: str, log_fn) -> str:
-    raw = call_gemini_with_retry(pdf_path, id_prompt, log_fn)
+    raw = call_gemini_with_retry(pdf_path, id_prompt, log_fn, models=ID_MODELS)
     data = json.loads(clean_json_response(raw))
     return data.get("supplier_id", "UNKNOWN")
 
