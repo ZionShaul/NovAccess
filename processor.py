@@ -121,7 +121,12 @@ def _load_all_prompts() -> dict:
 def _upload_and_wait(pdf_path: str, log_fn) -> object:
     """Upload PDF and wait until Gemini marks it ACTIVE."""
     log_fn("  מעלה PDF ל-Gemini...")
-    uploaded = _client.files.upload(file=str(pdf_path))
+    # פותחים כ-binary stream כדי לעקוף שגיאת ASCII encoding בשמות קבצים עבריים
+    with open(pdf_path, "rb") as f:
+        uploaded = _client.files.upload(
+            file=f,
+            config=types.UploadFileConfig(mime_type="application/pdf"),
+        )
     while uploaded.state.name != "ACTIVE":
         time.sleep(3)
         uploaded = _client.files.get(name=uploaded.name)
