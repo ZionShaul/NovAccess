@@ -582,7 +582,7 @@ def process_folder(
         log_fn(f"[{i}/{total}] {pdf_path.name}")
         rows = process_single_pdf(pdf_path, prompts, archive_dir, log_fn, customer_list=customer_list)
         if rows is not None:
-            inv_num = rows[0].get("מספר_חשבונית", "").strip() if rows else ""
+            inv_num = str(rows[0].get("מספר_חשבונית") or "").strip() if rows else ""
             if inv_num and inv_num in seen_invoice_numbers:
                 duplicate_rows.extend(rows)
                 duplicate_count += 1
