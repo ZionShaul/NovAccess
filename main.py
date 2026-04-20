@@ -255,7 +255,7 @@ class App(tk.Tk):
     def _run_in_thread(self, folder: str, api_key: str):
         customers_path = str(processor.CUSTOMERS_FILE) if self.use_customers_var.get() else None
         try:
-            output_path = processor.process_folder(
+            output_path, dup_path = processor.process_folder(
                 folder_path=folder,
                 api_key=api_key,
                 log_fn=self.log,
@@ -265,9 +265,9 @@ class App(tk.Tk):
             )
         except Exception as exc:
             self.log(f"\n[שגיאה קריטית] {exc}")
-            output_path = None
+            output_path, dup_path = None, None
 
-        self.after(0, self._on_complete, output_path)
+        self.after(0, self._on_complete, output_path, dup_path)
 
     # ------------------------------------------------------------------
     # Processing tab — thread-safe UI callbacks
@@ -302,7 +302,7 @@ class App(tk.Tk):
             self.progress["maximum"] = total
             self.progress["value"] = current
 
-    def _on_complete(self, output_path: str | None):
+    def _on_complete(self, output_path: str | None, dup_path: str | None):
         if self._log_file:
             try:
                 self._log_file.close()
@@ -324,6 +324,12 @@ class App(tk.Tk):
             messagebox.showwarning(
                 "הושלם",
                 "העיבוד הסתיים.\nלא נוצר קובץ אקסל (לא חולצו נתונים או שלא נמצאו קבצי PDF).",
+            )
+
+        if dup_path:
+            messagebox.showwarning(
+                "נמצאו כפילויות",
+                f"זוהו חשבוניות כפולות שלא נכללו בקובץ הראשי.\n\nקובץ הכפילויות:\n{dup_path}",
             )
 
     # ------------------------------------------------------------------

@@ -561,11 +561,15 @@ def process_folder(
     log_fn(f"נמצאו {total} קבצי PDF לעיבוד. מתחיל...\n")
 
     all_rows = []
+    duplicate_rows = []
+    seen_invoice_numbers: set[str] = set()
     success_count = 0
     error_count = 0
+    duplicate_count = 0
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     output_path = folder / f"invoices_{timestamp}.xlsx"
+    duplicate_path = folder / f"invoices_{timestamp}_duplicates.xlsx"
 
     for i, pdf_path in enumerate(pdfs, start=1):
         if stop_event and stop_event.is_set():
@@ -575,9 +579,17 @@ def process_folder(
         log_fn(f"[{i}/{total}] {pdf_path.name}")
         rows = process_single_pdf(pdf_path, prompts, archive_dir, log_fn, customer_list=customer_list)
         if rows is not None:
-            all_rows.extend(rows)
-            success_count += 1
-            save_excel(all_rows, str(output_path))  # incremental save after each success
+            inv_num = rows[0].get("מספר_חשבונית", "").strip() if rows else ""
+            if inv_num and inv_num in seen_invoice_numbers:
+                duplicate_rows.extend(rows)
+                duplicate_count += 1
+                log_fn(f"  [כפילות] חשבונית {inv_num} כבר קיימת — הועברה לקובץ כפילויות")
+            else:
+                if inv_num:
+                    seen_invoice_numbers.add(inv_num)
+                all_rows.extend(rows)
+                success_count += 1
+                save_excel(all_rows, str(output_path))  # incremental save after each success
         else:
             error_count += 1
         progress_fn(i, total)
@@ -589,15 +601,24 @@ def process_folder(
     log_fn(f"סה\"כ קבצים:       {total}")
     log_fn(f"פוענחו בהצלחה:    {success_count}")
     log_fn(f"נכשלו:             {error_count}")
+    if duplicate_count:
+        log_fn(f"כפילויות:          {duplicate_count} חשבוניות")
+
+    dup_out: str | None = None
+    if duplicate_rows:
+        save_excel(duplicate_rows, str(duplicate_path))
+        dup_out = str(duplicate_path)
+        log_fn(f"קובץ כפילויות:     {duplicate_path}")
 
     if not all_rows:
         log_fn("לא חולצו נתונים – לא נוצר קובץ אקסל.")
-        return None
+        log_fn("=" * 40)
+        return None, dup_out
 
     log_fn(f"קובץ פירוט נשמר:   {output_path}")
     log_fn("=" * 40)
 
-    return str(output_path)
+    return str(output_path), dup_out
 
 
 # ---------------------------------------------------------------------------
