@@ -43,7 +43,7 @@ class App(tk.Tk):
         self._merge_out_name_var = tk.StringVar(
             value=f"merged_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.xlsx"
         )
-        self._merge_include_summary = tk.BooleanVar(value=True)
+
         self._merge_output_path: str | None = None
 
         self._build_ui()
@@ -161,11 +161,6 @@ class App(tk.Tk):
         ttk.Label(out_frame, text="שם קובץ:").grid(row=1, column=0, sticky="e", padx=(0, 4), pady=(6, 0))
         ttk.Entry(out_frame, textvariable=self._merge_out_name_var).grid(row=1, column=1, columnspan=2, sticky="ew", pady=(6, 0))
 
-        ttk.Checkbutton(
-            out_frame,
-            text='כלול גם קבצי סיכום (_summary)',
-            variable=self._merge_include_summary,
-        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
         # Row 3 — action buttons
         act_frame = ttk.Frame(parent)
@@ -401,19 +396,18 @@ class App(tk.Tk):
 
         threading.Thread(
             target=self._merge_run_in_thread,
-            args=(list(self._merge_files), output_path, self._merge_include_summary.get()),
+            args=(list(self._merge_files), output_path),
             daemon=True,
         ).start()
 
-    def _merge_run_in_thread(self, file_paths, output_path, include_summary):
+    def _merge_run_in_thread(self, file_paths, output_path):
         try:
-            detail_out, summary_out = processor.merge_excel_files(
+            detail_out = processor.merge_excel_files(
                 file_paths=file_paths,
                 output_path=output_path,
-                include_summary=include_summary,
                 log_fn=self._merge_log,
             )
-            self.after(0, self._merge_on_complete, detail_out, summary_out, None)
+            self.after(0, self._merge_on_complete, detail_out, None, None)
         except Exception as exc:
             self.after(0, self._merge_on_complete, None, None, str(exc))
 
@@ -423,11 +417,8 @@ class App(tk.Tk):
             messagebox.showerror("שגיאת איחוד", error)
         else:
             self._merge_output_path = detail_out
-            msg = f"האיחוד הושלם בהצלחה!\n\nקובץ פירוט: {detail_out}"
-            if summary_out:
-                msg += f"\nקובץ סיכום:  {summary_out}"
             self._merge_log("האיחוד הושלם בהצלחה.")
-            messagebox.showinfo("הושלם", msg)
+            messagebox.showinfo("הושלם", f"האיחוד הושלם בהצלחה!\n\nקובץ: {detail_out}")
 
     # ------------------------------------------------------------------
     # Merge tab — thread-safe log helpers

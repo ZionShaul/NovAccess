@@ -32,9 +32,14 @@ SUPPLIER_PROMPT_MAP = {
     "DESHEN":   "Prompt_DESHEN.txt",
 }
 
-# שם תצוגה קבוע לכל ספק — ידרוס את מה שהמודל מחלץ מה-PDF
+# שם תצוגה קבוע לכל ספק — נקבע לפי זיהוי הספק, לא לפי מה שבחשבונית
 SUPPLIER_DISPLAY_NAMES = {
-    "MASHBIR":  "המשביר לצרכן",
+    "ALEX":     "אלאקס",
+    "MASHBIR":  "המשביר לחקלאי",
+    "KOL_BO":   "כל בו לחקלאי",
+    "AMIR":     "עמיר שיווק",
+    "TIV_CHIM": "טיב כימיקלים",
+    "DESHEN":   "דשן הצפון",
 }
 
 EXPECTED_COLUMNS = [
@@ -199,10 +204,11 @@ def identify_supplier(pdf_path: str, id_prompt: str, log_fn) -> str:
 _HEADER_FIELDS = ["ספק", "לקוח", "מספר_חשבונית", "תאריך_חשבונית"]
 
 
-def _fill_missing_header_fields(rows: list) -> list:
+def _fill_missing_header_fields(rows: list, pdf_path: str = "") -> list:
     """
     אם המודל השמיט שדות header חוזרים (ספק/לקוח/מספר_חשבונית/תאריך_חשבונית),
     ממצא את ערכיהם מהשורות שכן כוללות אותם וממלא את השאר.
+    fallback: מספר_חשבונית נלקח משם הקובץ אם לא נמצא בשורות.
     """
     collected = {}
     for row in rows:
@@ -212,13 +218,18 @@ def _fill_missing_header_fields(rows: list) -> list:
         if len(collected) == len(_HEADER_FIELDS):
             break
 
-    if not collected:
-        return rows  # אין מה למלא
-
     for row in rows:
         for field, value in collected.items():
             if not row.get(field):
                 row[field] = value
+
+    # fallback: מספר חשבונית משם הקובץ
+    if pdf_path and not collected.get("מספר_חשבונית"):
+        inv_num = Path(pdf_path).stem
+        for row in rows:
+            if not row.get("מספר_חשבונית"):
+                row["מספר_חשבונית"] = inv_num
+
     return rows
 
 
@@ -230,7 +241,7 @@ def extract_invoice_data(pdf_path: str, supplier_prompt: str, log_fn) -> list:
         try:
             data = json.loads(cleaned)
             rows = data if isinstance(data, list) else data["rows"]
-            rows = _fill_missing_header_fields(rows)
+            rows = _fill_missing_header_fields(rows, pdf_path=pdf_path)
             return rows
         except json.JSONDecodeError as exc:
             last_exc = exc
@@ -409,11 +420,10 @@ def process_single_pdf(
         _move(pdf_path, errors_dir)
         return None
 
-    # דריסת שם ספק לפי הגדרה קבועה (אם קיימת)
-    display_name = SUPPLIER_DISPLAY_NAMES.get(supplier_id)
-    if display_name:
-        for row in rows:
-            row["ספק"] = display_name
+    # שם ספק נקבע מהזיהוי — לא ממה שהמודל חולץ מהחשבונית
+    display_name = SUPPLIER_DISPLAY_NAMES.get(supplier_id, "")
+    for row in rows:
+        row["ספק"] = display_name or row.get("ספק") or supplier_id
 
     log_fn(f"  {len(rows)} שורות חולצו בהצלחה")
     _move(pdf_path, archive_dir / supplier_id)
@@ -532,9 +542,6 @@ def process_folder(
         return None
 
     log_fn(f"קובץ פירוט נשמר:   {output_path}")
-    summary_path = str(output_path).replace(".xlsx", "_summary.xlsx")
-    if Path(summary_path).exists():
-        log_fn(f"קובץ סיכום נשמר:   {summary_path}")
     log_fn("=" * 40)
 
     return str(output_path)
@@ -544,25 +551,19 @@ def process_folder(
 # Excel export
 # ---------------------------------------------------------------------------
 
-_SUMMARY_LABELS = {"סה\"כ נטו", "מע\"מ", "סה\"כ לתשלום", "עיגול"}
+# regex לזיהוי שורות סיכום — מכסה וריאציות כמו סה"כ / סהכ / מע"מ / מעמ
+_SUMMARY_PATTERN = r'סה.?כ|מע.?מ|עיגול'
 
 
 def save_excel(all_rows: list, output_path: str) -> None:
     df = pd.DataFrame(all_rows, columns=EXPECTED_COLUMNS)
 
-    is_summary = df["תיאור_מוצר"].isin(_SUMMARY_LABELS)
-    detail_df  = df[~is_summary]
-    summary_df = df[is_summary]
+    # הסרת שורות סיכום לחלוטין — לא בפירוט ולא בקובץ נפרד
+    is_summary = df["תיאור_מוצר"].str.contains(_SUMMARY_PATTERN, na=False, regex=True)
+    detail_df = df[~is_summary]
 
-    # Detail file — line items only, no summary rows
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         detail_df.to_excel(writer, index=False, sheet_name="Invoices")
-
-    # Summary file — summary rows only, saved alongside detail file
-    if not summary_df.empty:
-        summary_path = output_path.replace(".xlsx", "_summary.xlsx")
-        with pd.ExcelWriter(summary_path, engine="openpyxl") as writer:
-            summary_df.to_excel(writer, index=False, sheet_name="Summary")
 
 
 # ---------------------------------------------------------------------------
@@ -572,18 +573,16 @@ def save_excel(all_rows: list, output_path: str) -> None:
 def merge_excel_files(
     file_paths: list,
     output_path: str,
-    include_summary: bool = True,
     log_fn=None,
-) -> tuple:
+) -> str:
     """
     מאחד מספר קבצי Excel (גיליון Invoices) לקובץ אחד.
-    מחזיר (detail_output_path, summary_output_path | None).
+    מחזיר את נתיב הקובץ המאוחד.
     """
     if not file_paths:
         raise ValueError("לא נבחרו קבצים לאיחוד")
 
-    detail_frames, summary_frames = [], []
-
+    frames = []
     for p in file_paths:
         if not Path(p).exists():
             raise FileNotFoundError(f"קובץ לא נמצא: {p}")
@@ -591,29 +590,15 @@ def merge_excel_files(
             df = pd.read_excel(p, sheet_name="Invoices")
         except Exception:
             raise ValueError(f"קובץ לא תקין או חסר גיליון 'Invoices': {Path(p).name}")
-        detail_frames.append(df)
+        frames.append(df)
         if log_fn:
             log_fn(f"  נקרא: {Path(p).name} — {len(df)} שורות")
 
-        if include_summary:
-            sp = p.replace(".xlsx", "_summary.xlsx")
-            if Path(sp).exists():
-                try:
-                    summary_frames.append(pd.read_excel(sp, sheet_name="Summary"))
-                except Exception:
-                    pass
-
-    merged = pd.concat(detail_frames, ignore_index=True)
+    merged = pd.concat(frames, ignore_index=True)
     with pd.ExcelWriter(output_path, engine="openpyxl") as w:
         merged.to_excel(w, index=False, sheet_name="Invoices")
-
-    summary_out = None
-    if summary_frames:
-        summary_out = output_path.replace(".xlsx", "_summary.xlsx")
-        with pd.ExcelWriter(summary_out, engine="openpyxl") as w:
-            pd.concat(summary_frames, ignore_index=True).to_excel(w, index=False, sheet_name="Summary")
 
     if log_fn:
         log_fn(f"נכתב: {Path(output_path).name} ({len(merged)} שורות סה\"כ)")
 
-    return output_path, summary_out
+    return output_path
