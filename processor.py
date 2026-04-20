@@ -46,6 +46,7 @@ EXPECTED_COLUMNS = [
     "ספק", "לקוח", "מספר_חשבונית", "תאריך_חשבונית",
     "מספר_תעודת_משלוח", "תאריך_תעודה", "מקט",
     "תיאור_מוצר", "כמות", "מחיר_ליחידה", "סהכ_מחיר",
+    "מודל_חילוץ",
 ]
 
 # מודלים לזיהוי ספק — משימה פשוטה, מודל זול מספיק
@@ -205,7 +206,8 @@ def call_gemini_with_retry(pdf_path: str, prompt: str, log_fn, models=None) -> s
                         **kwargs,
                     )
                     log_fn(f"  מודל פעיל: {model_name}{thinking_label}")
-                    return response.text
+                    label = "thinking" if use_thinking else "fast"
+                    return response.text, label
                 except _GEMINI_TIMEOUT:
                     if attempt == MAX_RETRIES:
                         raise
@@ -229,7 +231,7 @@ def call_gemini_with_retry(pdf_path: str, prompt: str, log_fn, models=None) -> s
 # ---------------------------------------------------------------------------
 
 def identify_supplier(pdf_path: str, id_prompt: str, log_fn) -> str:
-    raw = call_gemini_with_retry(pdf_path, id_prompt, log_fn, models=ID_MODELS)
+    raw, _ = call_gemini_with_retry(pdf_path, id_prompt, log_fn, models=ID_MODELS)
     data = json.loads(clean_json_response(raw))
     return data.get("supplier_id", "UNKNOWN")
 
@@ -278,13 +280,13 @@ def extract_invoice_data(
 
     last_exc = None
     for json_attempt in range(1, 4):
-        raw = call_gemini_with_retry(pdf_path, prompt, log_fn)
+        raw, model_label = call_gemini_with_retry(pdf_path, prompt, log_fn)
         cleaned = clean_json_response(raw)
         try:
             data = json.loads(cleaned)
             rows = data if isinstance(data, list) else data["rows"]
             rows = _fill_missing_header_fields(rows, pdf_path=pdf_path)
-            return rows
+            return rows, model_label
         except json.JSONDecodeError as exc:
             last_exc = exc
             log_fn(f"  [אזהרה] JSON לא תקין (ניסיון {json_attempt}/3): {exc}")
@@ -457,7 +459,7 @@ def process_single_pdf(
     # Step 2: extract data
     try:
         log_fn("  חילוץ נתונים...")
-        rows = extract_invoice_data(str(pdf_path), prompts[supplier_id], log_fn, customer_list=customer_list)
+        rows, model_label = extract_invoice_data(str(pdf_path), prompts[supplier_id], log_fn, customer_list=customer_list)
     except Exception as exc:
         log_fn(f"  [שגיאה] חילוץ נתונים נכשל: {exc}")
         _move(pdf_path, errors_dir)
@@ -467,6 +469,7 @@ def process_single_pdf(
     display_name = SUPPLIER_DISPLAY_NAMES.get(supplier_id, "")
     for row in rows:
         row["ספק"] = display_name or row.get("ספק") or supplier_id
+        row["מודל_חילוץ"] = model_label
 
     log_fn(f"  {len(rows)} שורות חולצו בהצלחה")
     _move(pdf_path, archive_dir / supplier_id)
