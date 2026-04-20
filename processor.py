@@ -77,6 +77,9 @@ _GEMINI_TIMEOUT = (TimeoutError, google.api_core.exceptions.DeadlineExceeded)
 _SCRIPT_DIR = Path(__file__).parent
 _client: genai.Client | None = None
 
+# נתיב קבוע לקובץ רשימת הלקוחות
+CUSTOMERS_FILE = _SCRIPT_DIR / "לקוחות.xlsx"
+
 
 # ---------------------------------------------------------------------------
 # Helpers

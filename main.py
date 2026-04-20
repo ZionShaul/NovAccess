@@ -36,6 +36,7 @@ class App(tk.Tk):
         self._stop_event = threading.Event()
         self._log_file = None
         self._log_lock = threading.Lock()
+        self.use_customers_var = tk.BooleanVar(value=True)
 
         # --- Merge tab state ---
         self._merge_files: list = []
@@ -84,10 +85,11 @@ class App(tk.Tk):
         ttk.Entry(top, textvariable=self.folder_var).grid(row=0, column=1, sticky="ew")
         ttk.Button(top, text="בחר…", command=self._browse_folder).grid(row=0, column=2, padx=(6, 0))
 
-        ttk.Label(top, text="קובץ לקוחות (אופציונלי):").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=(6, 0))
-        self.customer_file_var = tk.StringVar()
-        ttk.Entry(top, textvariable=self.customer_file_var).grid(row=1, column=1, sticky="ew", pady=(6, 0))
-        ttk.Button(top, text="בחר…", command=self._browse_customer_file).grid(row=1, column=2, padx=(6, 0), pady=(6, 0))
+        ttk.Checkbutton(
+            top,
+            text="השתמש ברשימת לקוחות",
+            variable=self.use_customers_var,
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
         # Action buttons
         btn_frame = ttk.Frame(parent)
@@ -196,14 +198,6 @@ class App(tk.Tk):
         if folder:
             self.folder_var.set(folder)
 
-    def _browse_customer_file(self):
-        path = filedialog.askopenfilename(
-            title="בחר קובץ לקוחות (Excel)",
-            filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")],
-        )
-        if path:
-            self.customer_file_var.set(path)
-
     def _open_folder(self):
         if self._output_folder:
             os.startfile(self._output_folder)
@@ -259,7 +253,7 @@ class App(tk.Tk):
         ).start()
 
     def _run_in_thread(self, folder: str, api_key: str):
-        customers_path = self.customer_file_var.get().strip() or None
+        customers_path = str(processor.CUSTOMERS_FILE) if self.use_customers_var.get() else None
         try:
             output_path = processor.process_folder(
                 folder_path=folder,
