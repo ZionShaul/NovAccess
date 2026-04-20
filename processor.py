@@ -68,6 +68,9 @@ THINKING_BUDGET = -1
 
 MAX_RETRIES = 3
 
+# מספר מרבי של לקוחות שיוזרקו לפרומפט (כדי לא להעמיס יותר מדי)
+MAX_CUSTOMERS_IN_PROMPT = 300
+
 # Timeout exception types for the old SDK
 _GEMINI_TIMEOUT = (TimeoutError, google.api_core.exceptions.DeadlineExceeded)
 
@@ -81,6 +84,33 @@ _client: genai.Client | None = None
 
 def load_prompt(filename: str) -> str:
     return (_SCRIPT_DIR / filename).read_text(encoding="utf-8")
+
+
+def load_customer_list(xlsx_path: str) -> list[str]:
+    """
+    טוען רשימת לקוחות מקובץ Excel.
+    מחפש עמודה בשם 'שם_לקוח', 'לקוח' או 'שם לקוח'; אחרת לוקח את העמודה הראשונה.
+    מחזיר רשימת שמות ללא ערכים ריקים.
+    """
+    df = pd.read_excel(xlsx_path)
+    for col in ["שם_לקוח", "לקוח", "שם לקוח"]:
+        if col in df.columns:
+            return df[col].dropna().astype(str).str.strip().tolist()
+    # fallback — עמודה ראשונה
+    return df.iloc[:, 0].dropna().astype(str).str.strip().tolist()
+
+
+def _build_customer_appendix(customers: list[str]) -> str:
+    """בונה הנחיה לצירוף לפרומפט עם רשימת הלקוחות."""
+    trimmed = customers[:MAX_CUSTOMERS_IN_PROMPT]
+    lines = "\n".join(f"- {c}" for c in trimmed)
+    return (
+        "\n\n"
+        "רשימת לקוחות ידועים — בחר את ההתאמה הקרובה ביותר לשם המופיע בחשבונית:\n"
+        f"{lines}\n"
+        "אם השם בחשבונית קרוב לאחד מהרשימה, השתמש בשם המדויק מהרשימה. "
+        "אם לא קיימת התאמה סבירה, השתמש בשם כפי שמופיע בחשבונית."
+    )
 
 
 def _fix_hebrew_gershayim(s: str) -> str:
@@ -233,10 +263,19 @@ def _fill_missing_header_fields(rows: list, pdf_path: str = "") -> list:
     return rows
 
 
-def extract_invoice_data(pdf_path: str, supplier_prompt: str, log_fn) -> list:
+def extract_invoice_data(
+    pdf_path: str,
+    supplier_prompt: str,
+    log_fn,
+    customer_list: list | None = None,
+) -> list:
+    prompt = supplier_prompt
+    if customer_list:
+        prompt = prompt + _build_customer_appendix(customer_list)
+
     last_exc = None
     for json_attempt in range(1, 4):
-        raw = call_gemini_with_retry(pdf_path, supplier_prompt, log_fn)
+        raw = call_gemini_with_retry(pdf_path, prompt, log_fn)
         cleaned = clean_json_response(raw)
         try:
             data = json.loads(cleaned)
@@ -388,6 +427,7 @@ def process_single_pdf(
     prompts: dict,
     archive_dir: Path,
     log_fn,
+    customer_list: list | None = None,
 ) -> list | None:
     if not pdf_path.exists():
         log_fn(f"  [דילוג] קובץ לא נמצא (כנראה כבר עובד): {pdf_path.name}")
@@ -414,7 +454,7 @@ def process_single_pdf(
     # Step 2: extract data
     try:
         log_fn("  חילוץ נתונים...")
-        rows = extract_invoice_data(str(pdf_path), prompts[supplier_id], log_fn)
+        rows = extract_invoice_data(str(pdf_path), prompts[supplier_id], log_fn, customer_list=customer_list)
     except Exception as exc:
         log_fn(f"  [שגיאה] חילוץ נתונים נכשל: {exc}")
         _move(pdf_path, errors_dir)
@@ -450,6 +490,7 @@ def process_folder(
     log_fn,
     progress_fn,
     stop_event: threading.Event | None = None,
+    customers_path: str | None = None,
 ) -> str | None:
     """
     Process all PDFs in folder_path.
@@ -463,6 +504,15 @@ def process_folder(
     _client = genai.Client(api_key=api_key)
 
     prompts = _load_all_prompts()
+
+    # טעינת רשימת לקוחות (אופציונלי)
+    customer_list: list | None = None
+    if customers_path and Path(customers_path).exists():
+        try:
+            customer_list = load_customer_list(customers_path)
+            log_fn(f"נטענה רשימת לקוחות: {len(customer_list)} לקוחות מ-{Path(customers_path).name}")
+        except Exception as e:
+            log_fn(f"[אזהרה] לא ניתן לטעון רשימת לקוחות: {e}")
 
     # שלב 1: חלץ PDFים מקבצי MSG / EML
     mail_files = sorted(folder.glob("*.msg")) + sorted(folder.glob("*.eml"))
@@ -520,7 +570,7 @@ def process_folder(
             break
 
         log_fn(f"[{i}/{total}] {pdf_path.name}")
-        rows = process_single_pdf(pdf_path, prompts, archive_dir, log_fn)
+        rows = process_single_pdf(pdf_path, prompts, archive_dir, log_fn, customer_list=customer_list)
         if rows is not None:
             all_rows.extend(rows)
             success_count += 1

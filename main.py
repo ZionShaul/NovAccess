@@ -84,6 +84,11 @@ class App(tk.Tk):
         ttk.Entry(top, textvariable=self.folder_var).grid(row=0, column=1, sticky="ew")
         ttk.Button(top, text="בחר…", command=self._browse_folder).grid(row=0, column=2, padx=(6, 0))
 
+        ttk.Label(top, text="קובץ לקוחות (אופציונלי):").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=(6, 0))
+        self.customer_file_var = tk.StringVar()
+        ttk.Entry(top, textvariable=self.customer_file_var).grid(row=1, column=1, sticky="ew", pady=(6, 0))
+        ttk.Button(top, text="בחר…", command=self._browse_customer_file).grid(row=1, column=2, padx=(6, 0), pady=(6, 0))
+
         # Action buttons
         btn_frame = ttk.Frame(parent)
         btn_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=4)
@@ -191,6 +196,14 @@ class App(tk.Tk):
         if folder:
             self.folder_var.set(folder)
 
+    def _browse_customer_file(self):
+        path = filedialog.askopenfilename(
+            title="בחר קובץ לקוחות (Excel)",
+            filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")],
+        )
+        if path:
+            self.customer_file_var.set(path)
+
     def _open_folder(self):
         if self._output_folder:
             os.startfile(self._output_folder)
@@ -246,6 +259,7 @@ class App(tk.Tk):
         ).start()
 
     def _run_in_thread(self, folder: str, api_key: str):
+        customers_path = self.customer_file_var.get().strip() or None
         try:
             output_path = processor.process_folder(
                 folder_path=folder,
@@ -253,6 +267,7 @@ class App(tk.Tk):
                 log_fn=self.log,
                 progress_fn=self.set_progress,
                 stop_event=self._stop_event,
+                customers_path=customers_path,
             )
         except Exception as exc:
             self.log(f"\n[שגיאה קריטית] {exc}")
