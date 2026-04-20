@@ -3,12 +3,23 @@ NovAccess – main.py
 tkinter GUI for invoice processing automation.
 """
 
+import ctypes
 import os
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 from datetime import datetime
 from pathlib import Path
+
+# Windows sleep prevention
+_ES_CONTINUOUS      = 0x80000000
+_ES_SYSTEM_REQUIRED = 0x00000001
+
+def _prevent_sleep():
+    ctypes.windll.kernel32.SetThreadExecutionState(_ES_CONTINUOUS | _ES_SYSTEM_REQUIRED)
+
+def _allow_sleep():
+    ctypes.windll.kernel32.SetThreadExecutionState(_ES_CONTINUOUS)
 
 # Load .env (GOOGLE_API_KEY)
 try:
@@ -37,6 +48,7 @@ class App(tk.Tk):
         self._log_file = None
         self._log_lock = threading.Lock()
         self.use_customers_var = tk.BooleanVar(value=True)
+        self.prevent_sleep_var = tk.BooleanVar(value=True)
 
         # --- Merge tab state ---
         self._merge_files: list = []
@@ -106,6 +118,12 @@ class App(tk.Tk):
 
         self.copy_btn = ttk.Button(btn_frame, text="📋  העתק לוג", command=self._copy_log, state="disabled")
         self.copy_btn.pack(side="left", padx=(6, 0))
+
+        ttk.Checkbutton(
+            btn_frame,
+            text="נטרל כיבוי אוטומטי",
+            variable=self.prevent_sleep_var,
+        ).pack(side="left", padx=(12, 0))
 
         # Progress bar
         self.progress = ttk.Progressbar(parent, mode="determinate")
@@ -254,6 +272,8 @@ class App(tk.Tk):
 
     def _run_in_thread(self, folder: str, api_key: str):
         customers_path = str(processor.CUSTOMERS_FILE) if self.use_customers_var.get() else None
+        if self.prevent_sleep_var.get():
+            _prevent_sleep()
         try:
             output_path, dup_path = processor.process_folder(
                 folder_path=folder,
@@ -266,6 +286,8 @@ class App(tk.Tk):
         except Exception as exc:
             self.log(f"\n[שגיאה קריטית] {exc}")
             output_path, dup_path = None, None
+        finally:
+            _allow_sleep()
 
         self.after(0, self._on_complete, output_path, dup_path)
 
