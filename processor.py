@@ -46,7 +46,7 @@ EXPECTED_COLUMNS = [
     "ספק", "לקוח", "מספר_חשבונית", "תאריך_חשבונית",
     "מספר_תעודת_משלוח", "תאריך_תעודה", "מקט",
     "תיאור_מוצר", "כמות", "מחיר_ליחידה", "סהכ_מחיר",
-    "מודל_חילוץ",
+    "מודל_חילוץ", "שם_קובץ",
 ]
 
 # מודלים לזיהוי ספק — משימה פשוטה, מודל זול מספיק
@@ -470,6 +470,7 @@ def process_single_pdf(
     for row in rows:
         row["ספק"] = display_name or row.get("ספק") or supplier_id
         row["מודל_חילוץ"] = model_label
+        row["שם_קובץ"] = pdf_path.name
 
     log_fn(f"  {len(rows)} שורות חולצו בהצלחה")
     _move(pdf_path, archive_dir / supplier_id)
