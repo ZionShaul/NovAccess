@@ -19,6 +19,8 @@ from google.genai import types
 import google.api_core.exceptions
 import pandas as pd
 
+_SCRIPT_DIR = Path(__file__).parent
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -49,23 +51,39 @@ EXPECTED_COLUMNS = [
     "מודל_חילוץ", "שם_קובץ",
 ]
 
-# מודלים לזיהוי ספק — משימה פשוטה, מודל זול מספיק
+# מודלים לזיהוי ספק — משימה פשוטה, מודל זול מספיק (לא קונפיגורבילי)
 ID_MODELS = ["gemini-flash-latest", "gemini-2.0-flash-lite"]
 
-# מודלים לחילוץ נתונים — דורש reasoning מעמיק
-EXTRACTION_MODELS = [
-    "gemini-2.5-flash",       # stable thinking model — עיקרי
-    "gemini-3-flash-preview", # preview thinking model — fallback
-    "gemini-flash-latest",    # fallback מהיר (ללא thinking)
-]
+# ---------------------------------------------------------------------------
+# Settings loader — מודלי חילוץ נטענים מ-settings.json
+# ---------------------------------------------------------------------------
 
-# מודלים שתומכים ב-thinking config
-THINKING_MODELS = {
-    "gemini-2.5-flash",
-    "gemini-3-flash-preview",
-}
-# thinking_budget=-1 = AUTOMATIC (המודל מחליט כמה לחשוב לפי מורכבות הבקשה)
-THINKING_BUDGET = -1
+_SETTINGS_PATH = _SCRIPT_DIR / "settings.json"
+_DEFAULT_EXTRACTION_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"]
+_DEFAULT_THINKING_BUDGET = -1  # AUTOMATIC
+
+
+def _load_settings() -> tuple[list[str], int]:
+    """Load extraction model config from settings.json. Falls back to defaults on any error."""
+    try:
+        cfg = json.loads(_SETTINGS_PATH.read_text(encoding="utf-8"))
+        active = cfg["active_tier"]
+        tier = cfg["tiers"][active]
+        models = tier["extraction_models"]
+        budget = tier["thinking_budget"]
+        if not isinstance(models, list) or not models:
+            raise ValueError("extraction_models must be a non-empty list")
+        if not isinstance(budget, int):
+            raise ValueError("thinking_budget must be an integer")
+        return models, budget
+    except FileNotFoundError:
+        return _DEFAULT_EXTRACTION_MODELS, _DEFAULT_THINKING_BUDGET
+    except Exception as exc:
+        print(f"[NovAccess] settings.json error ({exc}); using defaults.")
+        return _DEFAULT_EXTRACTION_MODELS, _DEFAULT_THINKING_BUDGET
+
+
+EXTRACTION_MODELS, THINKING_BUDGET = _load_settings()
 
 MAX_RETRIES = 3
 
@@ -75,7 +93,6 @@ MAX_CUSTOMERS_IN_PROMPT = 300
 # Timeout exception types for the old SDK
 _GEMINI_TIMEOUT = (TimeoutError, google.api_core.exceptions.DeadlineExceeded)
 
-_SCRIPT_DIR = Path(__file__).parent
 _client: genai.Client | None = None
 
 # נתיב קבוע לקובץ רשימת הלקוחות
@@ -172,24 +189,27 @@ def _upload_and_wait(pdf_path: str, log_fn) -> object:
     return uploaded
 
 
-def call_gemini_with_retry(pdf_path: str, prompt: str, log_fn, models=None) -> str:
+def call_gemini_with_retry(pdf_path: str, prompt: str, log_fn, models=None, thinking_budget=None) -> str:
     """
     Upload PDF, try each model up to MAX_RETRIES times.
     Always deletes the uploaded file.
     Returns response text on success; raises on total failure.
     models: רשימת מודלים לניסיון (ברירת מחדל: EXTRACTION_MODELS)
+    thinking_budget: override ל-THINKING_BUDGET הגלובלי (0 = כיבוי thinking)
     """
     if models is None:
         models = EXTRACTION_MODELS
+    if thinking_budget is None:
+        thinking_budget = THINKING_BUDGET
 
     uploaded_file = _upload_and_wait(pdf_path, log_fn)
 
     try:
         for model_name in models:
-            use_thinking = model_name in THINKING_MODELS
+            use_thinking = thinking_budget != 0
             gen_config = (
                 types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(thinking_budget=THINKING_BUDGET)
+                    thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget)
                 )
                 if use_thinking else None
             )
@@ -231,7 +251,7 @@ def call_gemini_with_retry(pdf_path: str, prompt: str, log_fn, models=None) -> s
 # ---------------------------------------------------------------------------
 
 def identify_supplier(pdf_path: str, id_prompt: str, log_fn) -> str:
-    raw, _ = call_gemini_with_retry(pdf_path, id_prompt, log_fn, models=ID_MODELS)
+    raw, _ = call_gemini_with_retry(pdf_path, id_prompt, log_fn, models=ID_MODELS, thinking_budget=0)
     data = json.loads(clean_json_response(raw))
     return data.get("supplier_id", "UNKNOWN")
 

@@ -1,0 +1,21 @@
+{
+  "_comment": "NovAccess model configuration. Edit 'active_tier' to switch between tiers.",
+  "active_tier": "advanced",
+  "tiers": {
+    "advanced": {
+      "_comment": "Full reasoning via thinking mode. Higher cost, best accuracy.",
+      "extraction_models": [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash"
+      ],
+      "thinking_budget": -1
+    },
+    "basic": {
+      "_comment": "Fast, no thinking. Lower cost, suitable for simple invoices.",
+      "extraction_models": [
+        "gemini-flash-latest"
+      ],
+      "thinking_budget": 0
+    }
+  }
+}
