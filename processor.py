@@ -63,18 +63,19 @@ _DEFAULT_EXTRACTION_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"]
 _DEFAULT_THINKING_BUDGET = -1  # AUTOMATIC
 
 
-def _load_settings() -> tuple[list[str], int]:
+def _load_settings() -> tuple[list[str], str | int]:
     """Load extraction model config from settings.json. Falls back to defaults on any error."""
     try:
         cfg = json.loads(_SETTINGS_PATH.read_text(encoding="utf-8"))
         active = cfg["active_tier"]
         tier = cfg["tiers"][active]
         models = tier["extraction_models"]
-        budget = tier["thinking_budget"]
         if not isinstance(models, list) or not models:
             raise ValueError("extraction_models must be a non-empty list")
-        if not isinstance(budget, int):
-            raise ValueError("thinking_budget must be an integer")
+        if "thinking_level" in tier:
+            budget = tier["thinking_level"]
+        else:
+            budget = int(tier["thinking_budget"])
         return models, budget
     except FileNotFoundError:
         return _DEFAULT_EXTRACTION_MODELS, _DEFAULT_THINKING_BUDGET
@@ -206,11 +207,15 @@ def call_gemini_with_retry(pdf_path: str, prompt: str, log_fn, models=None, thin
 
     try:
         for model_name in models:
-            use_thinking = thinking_budget != 0
+            if isinstance(thinking_budget, str):
+                thinking_config = types.ThinkingConfig(thinking_level=thinking_budget)
+            elif thinking_budget != 0:
+                thinking_config = types.ThinkingConfig(thinking_budget=thinking_budget)
+            else:
+                thinking_config = None
+            use_thinking = thinking_config is not None
             gen_config = (
-                types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget)
-                )
+                types.GenerateContentConfig(thinking_config=thinking_config)
                 if use_thinking else None
             )
             for attempt in range(1, MAX_RETRIES + 1):
