@@ -5,10 +5,10 @@
     "advanced": {
       "_comment": "Full reasoning via thinking mode. Higher cost, best accuracy.",
       "extraction_models": [
-        "gemini-2.5-flash",
-        "gemini-2.0-flash"
+        "gemini-3.5-flash",
+        "gemini-2.5-flash"
       ],
-      "thinking_budget": -1
+      "thinking_level": "high"
     },
     "basic": {
       "_comment": "Fast, no thinking. Lower cost, suitable for simple invoices.",
